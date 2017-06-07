@@ -10,9 +10,10 @@ package layers
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/tsg/gopacket"
 	"net"
 	"strings"
+
+	"github.com/tsg/gopacket"
 )
 
 type IPv4Flag uint8
