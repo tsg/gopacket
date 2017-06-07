@@ -11,12 +11,13 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"github.com/tsg/gopacket"
-	"github.com/tsg/gopacket/bytediff"
 	"net"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tsg/gopacket"
+	"github.com/tsg/gopacket/bytediff"
 )
 
 var testSimpleTCPPacket []byte = []byte{
@@ -294,7 +295,7 @@ func BenchmarkFmtVerboseString(b *testing.B) {
 	p := gopacket.NewPacket(testSimpleTCPPacket, LinkTypeEthernet, testDecodeOptions)
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		fmt.Sprintf("%#v", p)
+		_ = fmt.Sprintf("%#v", p)
 	}
 }
 

@@ -11,4 +11,3 @@ script:
  - go test github.com/google/gopacket/reassembly
  - ./.travis.gofmt.sh
  - ./.travis.govet.sh
- - ./.travis.golint.sh
