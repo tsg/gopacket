@@ -995,9 +995,9 @@ type Dumper struct {
 	cptr *C.pcap_dumper_t
 }
 
-// Returns a Dumper read to write packets from the given pcap
+// NewDumper returns a Dumper read to write packets from the given pcap
 // handler in the file given as parameter.
-func (h *Handle) NewDumper(file string) (dumper *Dumper, err error) {
+func (p *Handle) NewDumper(file string) (dumper *Dumper, err error) {
 	cf := C.CString(file)
 	defer C.free(unsafe.Pointer(cf))
 
@@ -1008,10 +1008,10 @@ func (h *Handle) NewDumper(file string) (dumper *Dumper, err error) {
 	if cptr == nil {
 		return nil, fmt.Errorf("Failed to open file: %s", file)
 	}
-	return &Dumper{h: h, cptr: cptr}, nil
+	return &Dumper{h: p, cptr: cptr}, nil
 }
 
-// Writes a packet to the file. The return values of ReadPacketData
+// WritePacketData writes a packet to the file. The return values of ReadPacketData
 // can be passed to this function as arguments.
 func (d *Dumper) WritePacketData(data []byte, ci gopacket.CaptureInfo) (err error) {
 	var pkthdr _Ctype_struct_pcap_pkthdr
@@ -1022,16 +1022,16 @@ func (d *Dumper) WritePacketData(data []byte, ci gopacket.CaptureInfo) (err erro
 	pkthdr.ts.tv_usec = C.gopacket_time_usecs_t(ci.Timestamp.Nanosecond() / 1000)
 
 	// pcap_dump takes a u_char pointer to the dumper as first argument
-	dumper_ptr := (*C.u_char)(unsafe.Pointer(d.cptr))
+	dumperPtr := (*C.u_char)(unsafe.Pointer(d.cptr))
 
 	// trick to get a pointer to the underling slice
 	ptr := (*C.u_char)(unsafe.Pointer(&data[0]))
 
-	_, err = C.pcap_dump(dumper_ptr, &pkthdr, ptr)
+	_, err = C.pcap_dump(dumperPtr, &pkthdr, ptr)
 	return
 }
 
-// Flushes the underling file to disk.
+// Flush the underlying file to disk.
 func (d *Dumper) Flush() (err error) {
 	n, err := C.pcap_dump_flush(d.cptr)
 	if err != nil {
@@ -1043,7 +1043,7 @@ func (d *Dumper) Flush() (err error) {
 	return
 }
 
-// Closes the underling file.
+// Close the underlying file.
 func (d *Dumper) Close() (err error) {
 	_, err = C.pcap_dump_close(d.cptr)
 	if err != nil {

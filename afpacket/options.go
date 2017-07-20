@@ -93,6 +93,7 @@ type OptBlockTimeout time.Duration
 // Setting this to BlockForever disables the timeout.
 type OptPollTimeout time.Duration
 
+// BlockForever can be set to disable OptPollTimeout.
 const BlockForever = -time.Millisecond
 
 // Default constants used by options.
