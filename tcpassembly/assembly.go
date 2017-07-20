@@ -9,7 +9,7 @@
 // The tcpassembly package implements uni-directional TCP reassembly, for use in
 // packet-sniffing applications.  The caller reads packets off the wire, then
 // presents them to an Assembler in the form of gopacket layers.TCP packets
-// (github.com/tsg/gopacket, code.google.com/p/gopacket/layers).
+// (github.com/tsg/gopacket, github.com/tsg/gopacket/layers).
 //
 // The Assembler uses a user-supplied
 // StreamFactory to create a user-defined Stream interface, then passes packet
@@ -21,11 +21,12 @@ package tcpassembly
 import (
 	"flag"
 	"fmt"
-	"github.com/tsg/gopacket"
-	"github.com/tsg/gopacket/layers"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/tsg/gopacket"
+	"github.com/tsg/gopacket/layers"
 )
 
 var memLog = flag.Bool("assembly_memuse_log", false, "If true, the github.com/tsg/gopacket/tcpassembly library will log information regarding its memory use every once in a while.")
@@ -124,7 +125,7 @@ func (c *pageCache) grow() {
 	pages := make([]page, c.pcSize)
 	c.pages = append(c.pages, pages)
 	c.size += c.pcSize
-	for i, _ := range pages {
+	for i := range pages {
 		c.free = append(c.free, &pages[i])
 	}
 	if *memLog {
@@ -201,7 +202,13 @@ func (p *StreamPool) connections() []*connection {
 	return conns
 }
 
-// FlushOlderThan finds any streams waiting for packets older than
+// FlushOptions provide options for flushing connections.
+type FlushOptions struct {
+	T        time.Time // If nonzero, only connections with data older than T are flushed
+	CloseAll bool      // If true, ALL connections are closed post flush, not just those that correctly see FIN/RST.
+}
+
+// FlushWithOptions finds any streams waiting for packets older than
 // the given time, and pushes through the data they have (IE: tells
 // them to stop waiting and skip the data they're waiting for).
 //
@@ -221,9 +228,13 @@ func (p *StreamPool) connections() []*connection {
 // AND the connection has not received any bytes since the passed-in time,
 // the connection will be closed.
 //
+// If CloseAll is set, it will close out connections that have been drained.
+// Regardless of the CloseAll setting, connections stale for the specified
+// time will be closed.
+//
 // Returns the number of connections flushed, and of those, the number closed
 // because of the flush.
-func (a *Assembler) FlushOlderThan(t time.Time) (flushed, closed int) {
+func (a *Assembler) FlushWithOptions(opt FlushOptions) (flushed, closed int) {
 	conns := a.connPool.connections()
 	closes := 0
 	flushes := 0
@@ -235,7 +246,7 @@ func (a *Assembler) FlushOlderThan(t time.Time) (flushed, closed int) {
 			conn.mu.Unlock()
 			continue
 		}
-		for conn.first != nil && conn.first.Seen.Before(t) {
+		for conn.first != nil && conn.first.Seen.Before(opt.T) {
 			a.skipFlush(conn)
 			flushed = true
 			if conn.closed {
@@ -243,7 +254,7 @@ func (a *Assembler) FlushOlderThan(t time.Time) (flushed, closed int) {
 				break
 			}
 		}
-		if !conn.closed && conn.first == nil && conn.lastSeen.Before(t) {
+		if opt.CloseAll && !conn.closed && conn.first == nil && conn.lastSeen.Before(opt.T) {
 			flushed = true
 			a.closeConnection(conn)
 			closes++
@@ -254,6 +265,11 @@ func (a *Assembler) FlushOlderThan(t time.Time) (flushed, closed int) {
 		conn.mu.Unlock()
 	}
 	return flushes, closes
+}
+
+// FlushOlderThan calls FlushWithOptions with the CloseAll option set to true.
+func (a *Assembler) FlushOlderThan(t time.Time) (flushed, closed int) {
+	return a.FlushWithOptions(FlushOptions{CloseAll: true, T: t})
 }
 
 // FlushAll flushes all remaining data into all remaining connections, closing
@@ -307,7 +323,7 @@ type StreamPool struct {
 func (p *StreamPool) grow() {
 	conns := make([]connection, p.nextAlloc)
 	p.all = append(p.all, conns)
-	for i, _ := range conns {
+	for i := range conns {
 		p.free = append(p.free, &conns[i])
 	}
 	if *memLog {
@@ -666,8 +682,8 @@ func (a *Assembler) closeConnection(conn *connection) {
 // starting at the highest sequence number and going down, since we assume the
 // common case is that TCP packets for a stream will appear in-order, with
 // minimal loss or packet reordering.
-func (conn *connection) traverseConn(seq Sequence) (prev, current *page) {
-	prev = conn.last
+func (c *connection) traverseConn(seq Sequence) (prev, current *page) {
+	prev = c.last
 	for prev != nil && prev.seq.Difference(seq) < 0 {
 		current = prev
 		prev = current.prev
@@ -679,16 +695,16 @@ func (conn *connection) traverseConn(seq Sequence) (prev, current *page) {
 // nodes prev-next in another doubly-linked list.  If prev is nil, makes first
 // the new first page in the connection's list.  If next is nil, makes last the
 // new last page in the list.  first/last may point to the same page.
-func (conn *connection) pushBetween(prev, next, first, last *page) {
+func (c *connection) pushBetween(prev, next, first, last *page) {
 	// Maintain our doubly linked list
-	if next == nil || conn.last == nil {
-		conn.last = last
+	if next == nil || c.last == nil {
+		c.last = last
 	} else {
 		last.next = next
 		next.prev = last
 	}
-	if prev == nil || conn.first == nil {
-		conn.first = first
+	if prev == nil || c.first == nil {
+		c.first = first
 	} else {
 		first.prev = prev
 		prev.next = first
@@ -699,10 +715,10 @@ func (a *Assembler) insertIntoConn(t *layers.TCP, conn *connection, ts time.Time
 	if conn.first != nil && conn.first.seq == conn.nextSeq {
 		panic("wtf")
 	}
-	p, p2 := a.pagesFromTcp(t, ts)
+	p, p2, numPages := a.pagesFromTCP(t, ts)
 	prev, current := conn.traverseConn(Sequence(t.Seq))
 	conn.pushBetween(prev, current, p, p2)
-	conn.pages++
+	conn.pages += numPages
 	if (a.MaxBufferedPagesPerConnection > 0 && conn.pages >= a.MaxBufferedPagesPerConnection) ||
 		(a.MaxBufferedPagesTotal > 0 && a.pc.used >= a.MaxBufferedPagesTotal) {
 		if *debugLog {
@@ -712,14 +728,15 @@ func (a *Assembler) insertIntoConn(t *layers.TCP, conn *connection, ts time.Time
 	}
 }
 
-// pagesFromTcp creates a page (or set of pages) from a TCP packet.  Note that
+// pagesFromTCP creates a page (or set of pages) from a TCP packet.  Note that
 // it should NEVER receive a SYN packet, as it doesn't handle sequences
 // correctly.
 //
 // It returns the first and last page in its doubly-linked list of new pages.
-func (a *Assembler) pagesFromTcp(t *layers.TCP, ts time.Time) (p, p2 *page) {
+func (a *Assembler) pagesFromTCP(t *layers.TCP, ts time.Time) (p, p2 *page, numPages int) {
 	first := a.pc.next(ts)
 	current := first
+	numPages++
 	seq, bytes := Sequence(t.Seq), t.Payload
 	for {
 		length := min(len(bytes), pageBytes)
@@ -734,9 +751,10 @@ func (a *Assembler) pagesFromTcp(t *layers.TCP, ts time.Time) (p, p2 *page) {
 		current.next = a.pc.next(ts)
 		current.next.prev = current
 		current = current.next
+		numPages++
 	}
 	current.End = t.RST || t.FIN
-	return first, current
+	return first, current, numPages
 }
 
 // addNextFromConn pops the first page from a connection off and adds it to the

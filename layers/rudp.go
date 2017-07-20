@@ -9,6 +9,7 @@ package layers
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/tsg/gopacket"
 )
 

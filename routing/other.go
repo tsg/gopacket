@@ -7,9 +7,9 @@
 // +build !linux
 
 // Package routing is currently only supported in Linux, but the build system requires a valid go file for all architectures.
-
 package routing
 
+// New can only create a Router in Linux.
 func New() (Router, error) {
 	panic("router only implemented in linux")
 }

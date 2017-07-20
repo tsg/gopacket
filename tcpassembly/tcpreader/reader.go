@@ -46,8 +46,9 @@ package tcpreader
 
 import (
 	"errors"
-	"github.com/tsg/gopacket/tcpassembly"
 	"io"
+
+	"github.com/tsg/gopacket/tcpassembly"
 )
 
 var discardBuffer = make([]byte, 4096)
@@ -113,6 +114,7 @@ type ReaderStream struct {
 	initiated    bool
 }
 
+// ReaderStreamOptions provides user-resettable options for a ReaderStream.
 type ReaderStreamOptions struct {
 	// LossErrors determines whether this stream will return
 	// ReaderStreamDataLoss errors from its Read function whenever it
@@ -157,7 +159,7 @@ func (r *ReaderStream) stripEmpty() {
 
 // DataLost is returned by the ReaderStream's Read function when it encounters
 // a Reassembly with Skip != 0.
-var DataLost error = errors.New("lost data")
+var DataLost = errors.New("lost data")
 
 // Read implements io.Reader's Read function.
 // Given a byte slice, it will either copy a non-zero number of bytes into

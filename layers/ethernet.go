@@ -11,8 +11,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/tsg/gopacket"
 	"net"
+
+	"github.com/tsg/gopacket"
 )
 
 // EthernetBroadcast is the broadcast MAC address used by Ethernet.

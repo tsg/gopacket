@@ -3,9 +3,12 @@ install:
  - go get github.com/tsg/gopacket
  - go get github.com/tsg/gopacket/layers
  - go get github.com/tsg/gopacket/tcpassembly
+ - go get github.com/tsg/gopacket/reassembly
 script:
  - go test github.com/tsg/gopacket
  - go test github.com/tsg/gopacket/layers
  - go test github.com/tsg/gopacket/tcpassembly
+ - go test github.com/tsg/gopacket/reassembly
  - ./.travis.gofmt.sh
- #- ./.travis.govet.sh
+ - ./.travis.govet.sh
+ - ./.travis.golint.sh

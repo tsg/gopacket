@@ -7,12 +7,13 @@
 package tcpassembly
 
 import (
-	"github.com/tsg/gopacket"
-	"github.com/tsg/gopacket/layers"
 	"net"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/tsg/gopacket"
+	"github.com/tsg/gopacket/layers"
 )
 
 var netFlow gopacket.Flow
@@ -554,7 +555,7 @@ func BenchmarkMultiStreamConn(b *testing.B) {
 		if i%65536 == 65535 {
 			if t.SYN {
 				t.SYN = false
-				t.Seq += 1
+				t.Seq++
 			}
 			t.Seq += 10
 		}

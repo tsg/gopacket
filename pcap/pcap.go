@@ -8,7 +8,9 @@
 package pcap
 
 /*
+#cgo solaris LDFLAGS: -L /opt/local/lib -lpcap
 #cgo linux LDFLAGS: -lpcap
+#cgo dragonfly LDFLAGS: -lpcap
 #cgo freebsd LDFLAGS: -lpcap
 #cgo openbsd LDFLAGS: -lpcap
 #cgo darwin LDFLAGS: -lpcap
@@ -84,6 +86,11 @@ int pcap_set_rfmon(pcap_t *p, int rfmon) {
 #elif __GLIBC__
 #define gopacket_time_secs_t __time_t
 #define gopacket_time_usecs_t __suseconds_t
+#else  // Some form of linux/bsd/etc...
+#include <sys/param.h>
+#ifdef __OpenBSD__
+#define gopacket_time_secs_t u_int32_t
+#define gopacket_time_usecs_t u_int32_t
 #elif __OpenBSD__
 // time_t is 64-bit, however bpf_timeval uses 32 bit fields
 #define gopacket_time_secs_t u_int32_t
@@ -91,6 +98,7 @@ int pcap_set_rfmon(pcap_t *p, int rfmon) {
 #else
 #define gopacket_time_secs_t time_t
 #define gopacket_time_usecs_t suseconds_t
+#endif
 #endif
 */
 import "C"
@@ -114,6 +122,15 @@ import (
 
 const errorBufferSize = 256
 
+// MaxBpfInstructions is the maximum number of BPF instructions supported (BPF_MAXINSNS),
+// taken from Linux kernel: include/uapi/linux/bpf_common.h
+//
+// https://github.com/torvalds/linux/blob/master/include/uapi/linux/bpf_common.h
+const MaxBpfInstructions = 4096
+
+// 8 bytes per instruction, max 4096 instructions
+const bpfInstructionBufferSize = 8 * MaxBpfInstructions
+
 // Handle provides a connection to a pcap handle, allowing users to read packets
 // off the wire (Next), inject packets onto the wire (Inject), and
 // perform a number of other functions to affect and understand packet output.
@@ -124,13 +141,14 @@ type Handle struct {
 	cptr         *C.pcap_t
 	blockForever bool
 	device       string
+	deviceIndex  int
 	mu           sync.Mutex
 	// Since pointers to these objects are passed into a C function, if
 	// they're declared locally then the Go compiler thinks they may have
 	// escaped into C-land, so it allocates them on the heap.  This causes a
 	// huge memory hit, so to handle that we store them here instead.
-	pkthdr  *C.struct_pcap_pkthdr
-	buf_ptr *C.u_char
+	pkthdr *C.struct_pcap_pkthdr
+	bufptr *C.u_char
 }
 
 // Stats contains statistics on how many packets were handled by a pcap handle,
@@ -169,8 +187,16 @@ type BPF struct {
 	bpf  _Ctype_struct_bpf_program // takes a finalizer, not overriden by outsiders
 }
 
-// BlockForever, when passed into OpenLive/SetTimeout, causes it to block forever
-// waiting for packets, while still returning incoming packets to userland relatively
+// BPFInstruction is a byte encoded structure holding a BPF instruction
+type BPFInstruction struct {
+	Code uint16
+	Jt   uint8
+	Jf   uint8
+	K    uint32
+}
+
+// BlockForever causes it to block forever waiting for packets, when passed
+// into SetTimeout or OpenLive, while still returning incoming packets to userland relatively
 // quickly.
 const BlockForever = -time.Millisecond * 10
 
@@ -202,6 +228,15 @@ func OpenLive(device string, snaplen int32, promisc bool, timeout time.Duration)
 	p := &Handle{}
 	p.blockForever = timeout < 0
 	p.device = device
+
+	ifc, err := net.InterfaceByName(device)
+	if err != nil {
+		// The device wasn't found in the OS, but could be "any"
+		// Set index to 0
+		p.deviceIndex = 0
+	} else {
+		p.deviceIndex = ifc.Index
+	}
 
 	dev := C.CString(device)
 	defer C.free(unsafe.Pointer(dev))
@@ -258,6 +293,7 @@ func (n NextError) Error() string {
 	return strconv.Itoa(int(n))
 }
 
+// NextError values.
 const (
 	NextErrorOk             NextError = 1
 	NextErrorTimeoutExpired NextError = 0
@@ -268,16 +304,19 @@ const (
 	NextErrorNotActivated  NextError = -3
 )
 
-// NextError returns the next packet read from the pcap handle, along with an error
+// ReadPacketData returns the next packet read from the pcap handle, along with an error
 // code associated with that packet.  If the packet is read successfully, the
 // returned error is nil.
 func (p *Handle) ReadPacketData() (data []byte, ci gopacket.CaptureInfo, err error) {
 	p.mu.Lock()
 	err = p.getNextBufPtrLocked(&ci)
 	if err == nil {
-		data = C.GoBytes(unsafe.Pointer(p.buf_ptr), C.int(ci.CaptureLength))
+		data = C.GoBytes(unsafe.Pointer(p.bufptr), C.int(ci.CaptureLength))
 	}
 	p.mu.Unlock()
+	if err == NextErrorTimeoutExpired {
+		runtime.Gosched()
+	}
 	return
 }
 
@@ -314,9 +353,12 @@ func (a activateError) Error() string {
 // getNextBufPtrLocked is shared code for ReadPacketData and
 // ZeroCopyReadPacketData.
 func (p *Handle) getNextBufPtrLocked(ci *gopacket.CaptureInfo) error {
+	if p.cptr == nil {
+		return io.EOF
+	}
 	var result NextError
 	for {
-		result = NextError(C.pcap_next_ex(p.cptr, &p.pkthdr, &p.buf_ptr))
+		result = NextError(C.pcap_next_ex(p.cptr, &p.pkthdr, &p.bufptr))
 		if p.blockForever && result == NextErrorTimeoutExpired {
 			continue
 		}
@@ -325,14 +367,14 @@ func (p *Handle) getNextBufPtrLocked(ci *gopacket.CaptureInfo) error {
 	if result != NextErrorOk {
 		if result == NextErrorNoMorePackets {
 			return io.EOF
-		} else {
-			return result
 		}
+		return result
 	}
 	ci.Timestamp = time.Unix(int64(p.pkthdr.ts.tv_sec),
 		int64(p.pkthdr.ts.tv_usec)*1000) // convert micros to nanos
 	ci.CaptureLength = int(p.pkthdr.caplen)
 	ci.Length = int(p.pkthdr.len)
+	ci.InterfaceIndex = p.deviceIndex
 	return nil
 }
 
@@ -351,17 +393,26 @@ func (p *Handle) ZeroCopyReadPacketData() (data []byte, ci gopacket.CaptureInfo,
 	err = p.getNextBufPtrLocked(&ci)
 	if err == nil {
 		slice := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-		slice.Data = uintptr(unsafe.Pointer(p.buf_ptr))
+		slice.Data = uintptr(unsafe.Pointer(p.bufptr))
 		slice.Len = ci.CaptureLength
 		slice.Cap = ci.CaptureLength
 	}
 	p.mu.Unlock()
+	if err == NextErrorTimeoutExpired {
+		runtime.Gosched()
+	}
 	return
 }
 
 // Close closes the underlying pcap handle.
 func (p *Handle) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cptr == nil {
+		return
+	}
 	C.pcap_close(p.cptr)
+	p.cptr = nil
 }
 
 // Error returns the current error associated with a pcap handle (pcap_geterr).
@@ -382,20 +433,20 @@ func (p *Handle) Stats() (stat *Stats, err error) {
 	}, nil
 }
 
-// Obtains a list of all possible data link types supported for an interface.
+// ListDataLinks obtains a list of all possible data link types supported for an interface.
 func (p *Handle) ListDataLinks() (datalinks []Datalink, err error) {
-	var dlt_buf *C.int
+	var dltbuf *C.int
 
-	n := int(C.pcap_list_datalinks(p.cptr, &dlt_buf))
+	n := int(C.pcap_list_datalinks(p.cptr, &dltbuf))
 	if -1 == n {
 		return nil, p.Error()
 	}
 
-	defer C.pcap_free_datalinks(dlt_buf)
+	defer C.pcap_free_datalinks(dltbuf)
 
 	datalinks = make([]Datalink, n)
 
-	dltArray := (*[100]C.int)(unsafe.Pointer(dlt_buf))
+	dltArray := (*[100]C.int)(unsafe.Pointer(dltbuf))
 
 	for i := 0; i < n; i++ {
 		expr := C.pcap_datalink_val_to_name((*dltArray)[i])
@@ -408,8 +459,15 @@ func (p *Handle) ListDataLinks() (datalinks []Datalink, err error) {
 	return datalinks, nil
 }
 
-// SetBPFFilter compiles and sets a BPF filter for the pcap handle.
-func (p *Handle) SetBPFFilter(expr string) (err error) {
+// pcap_compile is NOT thread-safe, so protect it.
+var pcapCompileMu sync.Mutex
+
+// compileBPFFilter always returns an allocated _Ctype_struct_bpf_program
+// It is the callers responsibility to free the memory again, e.g.
+//
+//    C.pcap_freecode(&bpf)
+//
+func (p *Handle) compileBPFFilter(expr string) (_Ctype_struct_bpf_program, error) {
 	errorBuf := (*C.char)(C.calloc(errorBufferSize, 1))
 	defer C.free(unsafe.Pointer(errorBuf))
 
@@ -436,8 +494,96 @@ func (p *Handle) SetBPFFilter(expr string) (err error) {
 	cexpr := C.CString(expr)
 	defer C.free(unsafe.Pointer(cexpr))
 
+	pcapCompileMu.Lock()
+	defer pcapCompileMu.Unlock()
 	if -1 == C.pcap_compile(p.cptr, &bpf, cexpr, 1, C.bpf_u_int32(maskp)) {
+		return bpf, p.Error()
+	}
+
+	return bpf, nil
+}
+
+// CompileBPFFilter compiles and returns a BPF filter with given a link type and capture length.
+func CompileBPFFilter(linkType layers.LinkType, captureLength int, expr string) ([]BPFInstruction, error) {
+	cptr := C.pcap_open_dead(C.int(linkType), C.int(captureLength))
+	if cptr == nil {
+		return nil, errors.New("error opening dead capture")
+	}
+
+	h := Handle{cptr: cptr}
+	defer h.Close()
+	return h.CompileBPFFilter(expr)
+}
+
+// CompileBPFFilter compiles and returns a BPF filter for the pcap handle.
+func (p *Handle) CompileBPFFilter(expr string) ([]BPFInstruction, error) {
+	bpf, err := p.compileBPFFilter(expr)
+	defer C.pcap_freecode(&bpf)
+	if err != nil {
+		return nil, err
+	}
+
+	bpfInsn := (*[bpfInstructionBufferSize]_Ctype_struct_bpf_insn)(unsafe.Pointer(bpf.bf_insns))[0:bpf.bf_len:bpf.bf_len]
+	bpfInstruction := make([]BPFInstruction, len(bpfInsn), len(bpfInsn))
+
+	for i, v := range bpfInsn {
+		bpfInstruction[i].Code = uint16(v.code)
+		bpfInstruction[i].Jt = uint8(v.jt)
+		bpfInstruction[i].Jf = uint8(v.jf)
+		bpfInstruction[i].K = uint32(v.k)
+	}
+
+	return bpfInstruction, nil
+}
+
+// SetBPFFilter compiles and sets a BPF filter for the pcap handle.
+func (p *Handle) SetBPFFilter(expr string) (err error) {
+	bpf, err := p.compileBPFFilter(expr)
+	defer C.pcap_freecode(&bpf)
+	if err != nil {
+		return err
+	}
+
+	if -1 == C.pcap_setfilter(p.cptr, &bpf) {
 		return p.Error()
+	}
+
+	return nil
+}
+
+// SetBPFInstructionFilter may be used to apply a filter in BPF asm byte code format.
+//
+// Simplest way to generate BPF asm byte code is with tcpdump:
+//     tcpdump -dd 'udp'
+//
+// The output may be used directly to add a filter, e.g.:
+//     bpfInstructions := []pcap.BpfInstruction{
+//			{0x28, 0, 0, 0x0000000c},
+//			{0x15, 0, 9, 0x00000800},
+//			{0x30, 0, 0, 0x00000017},
+//			{0x15, 0, 7, 0x00000006},
+//			{0x28, 0, 0, 0x00000014},
+//			{0x45, 5, 0, 0x00001fff},
+//			{0xb1, 0, 0, 0x0000000e},
+//			{0x50, 0, 0, 0x0000001b},
+//			{0x54, 0, 0, 0x00000012},
+//			{0x15, 0, 1, 0x00000012},
+//			{0x6, 0, 0, 0x0000ffff},
+//			{0x6, 0, 0, 0x00000000},
+//		}
+//
+// An other posibility is to write the bpf code in bpf asm.
+// Documentation: https://www.kernel.org/doc/Documentation/networking/filter.txt
+//
+// To compile the code use bpf_asm from
+// https://github.com/torvalds/linux/tree/master/tools/net
+//
+// The following command may be used to convert bpf_asm output to c/go struct, usable for SetBPFFilterByte:
+// bpf_asm -c tcp.bpf
+func (p *Handle) SetBPFInstructionFilter(bpfInstructions []BPFInstruction) (err error) {
+	bpf, err := bpfInstructionFilter(bpfInstructions)
+	if err != nil {
+		return err
 	}
 
 	if -1 == C.pcap_setfilter(p.cptr, &bpf) {
@@ -449,6 +595,23 @@ func (p *Handle) SetBPFFilter(expr string) (err error) {
 
 	return nil
 }
+func bpfInstructionFilter(bpfInstructions []BPFInstruction) (bpf _Ctype_struct_bpf_program, err error) {
+	if len(bpfInstructions) < 1 {
+		return bpf, errors.New("bpfInstructions must not be empty")
+	}
+
+	if len(bpfInstructions) > MaxBpfInstructions {
+		return bpf, fmt.Errorf("bpfInstructions must not be larger than %d", MaxBpfInstructions)
+	}
+
+	bpf.bf_len = C.u_int(len(bpfInstructions))
+	cbpfInsns := C.calloc(C.size_t(len(bpfInstructions)), C.size_t(unsafe.Sizeof(bpfInstructions[0])))
+
+	copy((*[bpfInstructionBufferSize]BPFInstruction)(cbpfInsns)[0:len(bpfInstructions)], bpfInstructions)
+	bpf.bf_insns = (*_Ctype_struct_bpf_insn)(cbpfInsns)
+
+	return
+}
 
 // NewBPF compiles the given string into a new filter program.
 //
@@ -459,9 +622,31 @@ func (p *Handle) NewBPF(expr string) (*BPF, error) {
 	cexpr := C.CString(expr)
 	defer C.free(unsafe.Pointer(cexpr))
 
+	pcapCompileMu.Lock()
+	defer pcapCompileMu.Unlock()
 	if C.pcap_compile(p.cptr, &bpf.bpf, cexpr /* optimize */, 1, C.PCAP_NETMASK_UNKNOWN) != 0 {
 		return nil, p.Error()
 	}
+
+	runtime.SetFinalizer(bpf, destroyBPF)
+	return bpf, nil
+}
+
+// NewBPFInstructionFilter sets the given BPFInstructions as new filter program.
+//
+// More details see func SetBPFInstructionFilter
+//
+// BPF filters need to be created from activated handles, because they need to
+// know the underlying link type to correctly compile their offsets.
+func (p *Handle) NewBPFInstructionFilter(bpfInstructions []BPFInstruction) (*BPF, error) {
+	var err error
+	bpf := &BPF{orig: "BPF Instruction Filter"}
+
+	bpf.bpf, err = bpfInstructionFilter(bpfInstructions)
+	if err != nil {
+		return nil, err
+	}
+
 	runtime.SetFinalizer(bpf, destroyBPF)
 	return bpf, nil
 }
@@ -542,6 +727,12 @@ func findalladdresses(addresses *_Ctype_struct_pcap_addr) (retval []InterfaceAdd
 	// TODO - make it support more than IPv4 and IPv6?
 	retval = make([]InterfaceAddress, 0, 1)
 	for curaddr := addresses; curaddr != nil; curaddr = (*_Ctype_struct_pcap_addr)(curaddr.next) {
+		// Strangely, it appears that in some cases, we get a pcap address back from
+		// pcap_findalldevs with a nil .addr.  It appears that we can skip over
+		// these.
+		if curaddr.addr == nil {
+			continue
+		}
 		var a InterfaceAddress
 		var err error
 		// In case of a tun device on Linux the link layer has no curaddr.addr.
@@ -549,10 +740,14 @@ func findalladdresses(addresses *_Ctype_struct_pcap_addr) (retval []InterfaceAdd
 		if curaddr.addr == nil {
 			continue
 		}
-		if a.IP, err = sockaddr_to_IP((*syscall.RawSockaddr)(unsafe.Pointer(curaddr.addr))); err != nil {
+		if a.IP, err = sockaddrToIP((*syscall.RawSockaddr)(unsafe.Pointer(curaddr.addr))); err != nil {
 			continue
 		}
-		if a.Netmask, err = sockaddr_to_IP((*syscall.RawSockaddr)(unsafe.Pointer(curaddr.netmask))); err != nil {
+		// To be safe, we'll also check for netmask.
+		if curaddr.netmask == nil {
+			continue
+		}
+		if a.Netmask, err = sockaddrToIP((*syscall.RawSockaddr)(unsafe.Pointer(curaddr.netmask))); err != nil {
 			// If we got an IP address but we can't get a netmask, just return the IP
 			// address.
 			a.Netmask = nil
@@ -562,7 +757,7 @@ func findalladdresses(addresses *_Ctype_struct_pcap_addr) (retval []InterfaceAdd
 	return
 }
 
-func sockaddr_to_IP(rsa *syscall.RawSockaddr) (IP []byte, err error) {
+func sockaddrToIP(rsa *syscall.RawSockaddr) (IP []byte, err error) {
 	switch rsa.Family {
 	case syscall.AF_INET:
 		pp := (*syscall.RawSockaddrInet4)(unsafe.Pointer(rsa))
@@ -594,6 +789,7 @@ func (p *Handle) WritePacketData(data []byte) (err error) {
 // Direction is used by Handle.SetDirection.
 type Direction uint8
 
+// Direction values for Handle.SetDirection.
 const (
 	DirectionIn    Direction = C.PCAP_D_IN
 	DirectionOut   Direction = C.PCAP_D_OUT
@@ -622,7 +818,9 @@ func (t TimestampSource) String() string {
 // TimestampSourceFromString translates a string into a timestamp type, case
 // insensitive.
 func TimestampSourceFromString(s string) (TimestampSource, error) {
-	t := C.pcap_tstamp_type_name_to_val(C.CString(s))
+	cs := C.CString(s)
+	defer C.free(unsafe.Pointer(cs))
+	t := C.pcap_tstamp_type_name_to_val(cs)
 	if t < 0 {
 		return 0, statusError(t)
 	}
@@ -639,6 +837,7 @@ type InactiveHandle struct {
 	// cptr is the handle for the actual pcap C object.
 	cptr         *C.pcap_t
 	device       string
+	deviceIndex  int
 	blockForever bool
 }
 
@@ -649,7 +848,7 @@ func (p *InactiveHandle) Activate() (*Handle, error) {
 	if err != aeNoError {
 		return nil, err
 	}
-	h := &Handle{cptr: p.cptr, device: p.device, blockForever: p.blockForever}
+	h := &Handle{cptr: p.cptr, device: p.device, deviceIndex: p.deviceIndex, blockForever: p.blockForever}
 	p.cptr = nil
 	return h, nil
 }
@@ -672,12 +871,20 @@ func NewInactiveHandle(device string) (*InactiveHandle, error) {
 	dev := C.CString(device)
 	defer C.free(unsafe.Pointer(dev))
 
+	// Try to get the interface index, but iy could be something like "any"
+	// in which case use 0, which doesn't exist in nature
+	deviceIndex := 0
+	ifc, err := net.InterfaceByName(device)
+	if err == nil {
+		deviceIndex = ifc.Index
+	}
+
 	// This copies a bunch of the pcap_open_live implementation from pcap.c:
 	cptr := C.pcap_create(dev, buf)
 	if cptr == nil {
 		return nil, errors.New(C.GoString(buf))
 	}
-	return &InactiveHandle{cptr: cptr, device: device}, nil
+	return &InactiveHandle{cptr: cptr, device: device, deviceIndex: deviceIndex}, nil
 }
 
 // SetSnapLen sets the snap length (max bytes per packet to capture).
@@ -788,9 +995,9 @@ type Dumper struct {
 	cptr *C.pcap_dumper_t
 }
 
-// Returns a Dumper read to write packets from the given pcap
+// NewDumper returns a Dumper read to write packets from the given pcap
 // handler in the file given as parameter.
-func (h *Handle) NewDumper(file string) (dumper *Dumper, err error) {
+func (p *Handle) NewDumper(file string) (dumper *Dumper, err error) {
 	cf := C.CString(file)
 	defer C.free(unsafe.Pointer(cf))
 
@@ -801,10 +1008,10 @@ func (h *Handle) NewDumper(file string) (dumper *Dumper, err error) {
 	if cptr == nil {
 		return nil, fmt.Errorf("Failed to open file: %s", file)
 	}
-	return &Dumper{h: h, cptr: cptr}, nil
+	return &Dumper{h: p, cptr: cptr}, nil
 }
 
-// Writes a packet to the file. The return values of ReadPacketData
+// WritePacketData writes a packet to the file. The return values of ReadPacketData
 // can be passed to this function as arguments.
 func (d *Dumper) WritePacketData(data []byte, ci gopacket.CaptureInfo) (err error) {
 	var pkthdr _Ctype_struct_pcap_pkthdr
@@ -815,16 +1022,16 @@ func (d *Dumper) WritePacketData(data []byte, ci gopacket.CaptureInfo) (err erro
 	pkthdr.ts.tv_usec = C.gopacket_time_usecs_t(ci.Timestamp.Nanosecond() / 1000)
 
 	// pcap_dump takes a u_char pointer to the dumper as first argument
-	dumper_ptr := (*C.u_char)(unsafe.Pointer(d.cptr))
+	dumperPtr := (*C.u_char)(unsafe.Pointer(d.cptr))
 
 	// trick to get a pointer to the underling slice
 	ptr := (*C.u_char)(unsafe.Pointer(&data[0]))
 
-	_, err = C.pcap_dump(dumper_ptr, &pkthdr, ptr)
+	_, err = C.pcap_dump(dumperPtr, &pkthdr, ptr)
 	return
 }
 
-// Flushes the underling file to disk.
+// Flush the underlying file to disk.
 func (d *Dumper) Flush() (err error) {
 	n, err := C.pcap_dump_flush(d.cptr)
 	if err != nil {
@@ -836,7 +1043,7 @@ func (d *Dumper) Flush() (err error) {
 	return
 }
 
-// Closes the underling file.
+// Close the underlying file.
 func (d *Dumper) Close() (err error) {
 	_, err = C.pcap_dump_close(d.cptr)
 	if err != nil {
