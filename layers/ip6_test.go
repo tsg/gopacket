@@ -12,7 +12,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/google/gopacket"
+	"github.com/tsg/gopacket"
 )
 
 func TestSerializeIPv6HeaderTLVOptions(t *testing.T) {

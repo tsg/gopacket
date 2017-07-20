@@ -9,7 +9,7 @@ package layers
 import (
 	"testing"
 
-	"github.com/google/gopacket"
+	"github.com/tsg/gopacket"
 )
 
 func TestTCPOptionKindString(t *testing.T) {

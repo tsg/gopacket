@@ -19,9 +19,9 @@ import (
 	"github.com/tsg/gopacket"
 	_ "github.com/tsg/gopacket/layers" // pulls in all layers decoders
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/ip4defrag"
-	"github.com/google/gopacket/layers" // pulls in all layers decoders
+	"github.com/tsg/gopacket"
+	"github.com/tsg/gopacket/ip4defrag"
+	"github.com/tsg/gopacket/layers" // pulls in all layers decoders
 )
 
 var (

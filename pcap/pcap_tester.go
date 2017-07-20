@@ -22,7 +22,7 @@ import (
 
 	"github.com/tsg/gopacket/pcap"
 
-	"github.com/google/gopacket/pcap"
+	"github.com/tsg/gopacket/pcap"
 )
 
 var mode = flag.String("mode", "basic", "One of: basic,filtered,timestamp")

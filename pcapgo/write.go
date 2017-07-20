@@ -17,8 +17,8 @@ import (
 	"github.com/tsg/gopacket"
 	"github.com/tsg/gopacket/layers"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"github.com/tsg/gopacket"
+	"github.com/tsg/gopacket/layers"
 )
 
 // Writer wraps an underlying io.Writer to write packet data in PCAP
