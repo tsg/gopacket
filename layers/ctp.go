@@ -9,6 +9,7 @@ package layers
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/tsg/gopacket"
 )
 
@@ -16,6 +17,7 @@ import (
 // EthernetCTP layer.
 type EthernetCTPFunction uint16
 
+// EthernetCTPFunction values.
 const (
 	EthernetCTPFunctionReply       EthernetCTPFunction = 1
 	EthernetCTPFunctionForwardData EthernetCTPFunction = 2
