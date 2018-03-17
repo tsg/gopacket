@@ -314,9 +314,9 @@ func (h *TPacket) pollForFirstPacket(hdr header) error {
 		timeout := C.int(h.opts.timeout / time.Millisecond)
 		n, err := C.poll(&h.pollset, 1, timeout)
 		if n == 0 {
-			# propagate timeout when no packets are available
-			# otherwise it will loop forever until a packet
-			# is received.
+			/* propagate timeout when no packets are available
+			   otherwise it will loop forever until a packet
+			  is received. */
 			return syscall.EINTR
 		}
 		h.stats.Polls++
