@@ -8,6 +8,14 @@
 package pcap
 
 /*
+#cgo linux LDFLAGS: -lpcap
+#cgo freebsd LDFLAGS: -lpcap
+#cgo openbsd LDFLAGS: -lpcap
+#cgo darwin LDFLAGS: -lpcap
+#cgo solaris LDFLAGS: -lpcap
+#cgo windows CFLAGS: -I C:/WpdPack/Include
+#cgo windows,386 LDFLAGS: -L C:/WpdPack/Lib -lwpcap
+#cgo windows,amd64 LDFLAGS: -L C:/WpdPack/Lib/x64 -lwpcap
 #include <stdlib.h>
 #include <pcap.h>
 
