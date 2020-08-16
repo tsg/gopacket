@@ -88,7 +88,7 @@ const (
 type LinkType uint8
 
 const (
-	// According to pcap-linktype(7).
+	// According to pcap-linktype(7) with fixes from pcap/bpf.h
 	LinkTypeNull           LinkType = 0
 	LinkTypeEthernet       LinkType = 1
 	LinkTypeTokenRing      LinkType = 6
@@ -97,7 +97,7 @@ const (
 	LinkTypePPP            LinkType = 9
 	LinkTypeFDDI           LinkType = 10
 	LinkTypeATM_RFC1483    LinkType = 100
-	LinkTypeRaw            LinkType = 101
+	LinkTypeRaw            LinkType = 12
 	LinkTypePPP_HDLC       LinkType = 50
 	LinkTypePPPEthernet    LinkType = 51
 	LinkTypeC_HDLC         LinkType = 104
@@ -358,18 +358,6 @@ func (a Dot11Type) LayerType() gopacket.LayerType {
 	return Dot11TypeMetadata[a].LayerType
 }
 
-// Decode a raw v4 or v6 IP packet.
-func decodeIPv4or6(data []byte, p gopacket.PacketBuilder) error {
-	version := data[0] >> 4
-	switch version {
-	case 4:
-		return decodeIPv4(data, p)
-	case 6:
-		return decodeIPv6(data, p)
-	}
-	return fmt.Errorf("Invalid IP packet version %v", version)
-}
-
 func init() {
 	// Here we link up all enumerations with their respective names and decoders.
 	for i := 0; i < 65536; i++ {
@@ -479,7 +467,7 @@ func init() {
 	LinkTypeMetadata[LinkTypeFDDI] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeFDDI), Name: "FDDI"}
 	LinkTypeMetadata[LinkTypeNull] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeLoopback), Name: "Null"}
 	LinkTypeMetadata[LinkTypeLoop] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeLoopback), Name: "Loop"}
-	LinkTypeMetadata[LinkTypeRaw] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeIPv4or6), Name: "Raw"}
+	LinkTypeMetadata[LinkTypeRaw] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeRawIP), Name: "Raw"}
 	LinkTypeMetadata[LinkTypePFLog] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodePFLog), Name: "PFLog"}
 	LinkTypeMetadata[LinkTypeIEEE80211Radio] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeRadioTap), Name: "RadioTap"}
 	LinkTypeMetadata[LinkTypeLinuxUSB] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(decodeUSB), Name: "USB"}
