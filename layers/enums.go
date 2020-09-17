@@ -88,7 +88,7 @@ const (
 type LinkType uint8
 
 const (
-	// According to pcap-linktype(7).
+	// According to pcap-linktype(7) with fixes from pcap/bpf.h
 	LinkTypeNull           LinkType = 0
 	LinkTypeEthernet       LinkType = 1
 	LinkTypeTokenRing      LinkType = 6
@@ -97,7 +97,7 @@ const (
 	LinkTypePPP            LinkType = 9
 	LinkTypeFDDI           LinkType = 10
 	LinkTypeATM_RFC1483    LinkType = 100
-	LinkTypeRaw            LinkType = 101
+	LinkTypeRaw            LinkType = 12
 	LinkTypePPP_HDLC       LinkType = 50
 	LinkTypePPPEthernet    LinkType = 51
 	LinkTypeC_HDLC         LinkType = 104
